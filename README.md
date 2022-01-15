@@ -1,4 +1,4 @@
-## btrfs-walk
+## btrfs-walk-tut
 
 Prints the absolute path of all regular files in an unmounted btrfs filesystem image.
 
