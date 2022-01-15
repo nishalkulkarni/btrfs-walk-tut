@@ -152,3 +152,48 @@ pub struct BtrfsChunk {
     pub stripe: BtrfsStripe,
     // additional stripes go here
 }
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BtrfsHeader {
+    pub csum: [u8; BTRFS_CSUM_SIZE],
+    pub fsid: [u8; BTRFS_FSID_SIZE],
+    pub bytenr: u64,
+    pub flags: u64,
+    pub chunk_tree_uuid: [u8; BTRFS_UUID_SIZE],
+    pub generation: u64,
+    pub owner: u64,
+    pub nritems: u32,
+    pub level: u8,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BtrfsKeyPtr {
+    pub key: BtrfsKey,
+    pub blockptr: u64,
+    pub generation: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BtrfsNode {
+    pub header: BtrfsHeader,
+    // `BtrfsKeyPtr`s begin here
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BtrfsItem {
+    pub key: BtrfsKey,
+    pub offset: u32,
+    pub size: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+pub struct BtrfsLeaf {
+    pub header: BtrfsHeader,
+    // `BtrfsItem`s begin here
+}
+
