@@ -369,10 +369,8 @@ fn walk_fs_tree(
 }
 
 fn main() {
-    println!("Hello, world!");
     let opt = Opt::from_args();
 
-    println!("{:?}", opt.device.as_path());
     let file = OpenOptions::new()
         .read(true)
         .open(opt.device.as_path())
