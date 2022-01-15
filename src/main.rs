@@ -236,6 +236,138 @@ fn read_fs_tree_root(
     bail!("Failed to find root tree item for fs tree root");
 }
 
+fn get_inode_ref(
+    inode: u64,
+    file: &File,
+    superblock: &BtrfsSuperblock,
+    node: &[u8],
+    cache: &ChunkTreeCache,
+) -> Result<Option<(BtrfsKey, BtrfsInodeRef, Vec<u8>)>> {
+    let header = tree::parse_btrfs_header(node)?;
+    // Leaf node
+    if header.level == 0 {
+        let items = tree::parse_btrfs_leaf(node)?;
+        for item in items {
+            if item.key.ty != BTRFS_INODE_REF_KEY {
+                continue;
+            }
+
+            if item.key.objectid == inode {
+                let inode_ref = unsafe {
+                    &*(node
+                        .as_ptr()
+                        .add(std::mem::size_of::<BtrfsHeader>() + item.offset as usize)
+                        as *const BtrfsInodeRef)
+                };
+
+                let inode_ref_payload = unsafe {
+                    std::slice::from_raw_parts(
+                        (inode_ref as *const BtrfsInodeRef as *const u8)
+                            .add(std::mem::size_of::<BtrfsInodeRef>()),
+                        inode_ref.name_len.into(),
+                    )
+                };
+
+                return Ok(Some((item.key, *inode_ref, inode_ref_payload.into())));
+            }
+        }
+
+        Ok(None)
+    } else {
+        let ptrs = tree::parse_btrfs_node(node)?;
+        for ptr in ptrs {
+            let physical = cache
+                .offset(ptr.blockptr)
+                .ok_or_else(|| anyhow!("fs tree node not mapped"))?;
+            let mut node = vec![0; superblock.node_size as usize];
+            file.read_exact_at(&mut node, physical)?;
+            let ret = get_inode_ref(inode, file, superblock, &node, cache)?;
+            if ret.is_some() {
+                return Ok(ret);
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+fn walk_fs_tree(
+    file: &File,
+    superblock: &BtrfsSuperblock,
+    node: &[u8],
+    root_fs_node: &[u8],
+    cache: &ChunkTreeCache,
+) -> Result<()> {
+    let header = tree::parse_btrfs_header(node)?;
+
+    if header.level == 0 {
+        let items = tree::parse_btrfs_leaf(node)?;
+        for item in items {
+            if item.key.ty != BTRFS_DIR_ITEM_KEY {
+                continue;
+            }
+
+            let dir_item = unsafe {
+                &*(node
+                    .as_ptr()
+                    .add(std::mem::size_of::<BtrfsHeader>() + item.offset as usize)
+                    as *const BtrfsDirItem)
+            };
+
+            if dir_item.ty != BTRFS_FT_REG_FILE {
+                continue;
+            }
+
+            let name_slice = unsafe {
+                std::slice::from_raw_parts(
+                    (dir_item as *const BtrfsDirItem as *const u8)
+                        .add(std::mem::size_of::<BtrfsDirItem>()),
+                    dir_item.name_len.into(),
+                )
+            };
+            let name = std::str::from_utf8(name_slice)?;
+
+            // Capacity 1 so we don't panic the first `String::insert`
+            let mut path_prefix = String::with_capacity(1);
+            // `item.key.objectid` is parent inode number
+            let mut current_inode_nr = item.key.objectid;
+
+            loop {
+                let (current_key, _current_inode, current_inode_payload) =
+                    get_inode_ref(current_inode_nr, file, superblock, root_fs_node, cache)?
+                        .ok_or_else(|| {
+                            anyhow!("Failed to find inode_ref for inode={}", current_inode_nr)
+                        })?;
+                unsafe { assert_eq!(current_key.objectid, current_inode_nr) };
+
+                if current_key.offset == current_inode_nr {
+                    path_prefix.insert(0, '/');
+                    break;
+                }
+
+                path_prefix.insert_str(
+                    0,
+                    &format!("{}/", std::str::from_utf8(&current_inode_payload)?),
+                );
+                current_inode_nr = current_key.offset;
+            }
+            println!("filename={}{}", path_prefix, name);
+        }
+    } else {
+        let ptrs = tree::parse_btrfs_node(node)?;
+        for ptr in ptrs {
+            let physical = cache
+                .offset(ptr.blockptr)
+                .ok_or_else(|| anyhow!("fs tree node not mapped"))?;
+            let mut node = vec![0; superblock.node_size as usize];
+            file.read_exact_at(&mut node, physical)?;
+            walk_fs_tree(file, superblock, &node, root_fs_node, cache)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     println!("Hello, world!");
     let opt = Opt::from_args();
@@ -262,4 +394,13 @@ fn main() {
 
     let fs_tree_root = read_fs_tree_root(&file, &superblock, &root_tree_root, &chunk_tree_cache)
         .expect("failed to read fs tree root");
+
+    walk_fs_tree(
+        &file,
+        &superblock,
+        &fs_tree_root,
+        &fs_tree_root,
+        &chunk_tree_cache,
+    )
+    .expect("failed to walk fs tree");
 }
